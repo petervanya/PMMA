@@ -29,7 +29,7 @@ delta_meth = sqrt(9.87**2 + 6.37**2 + 5.86**2)
 # from http://www.wag.caltech.edu/publications/sup/pdf/587.pdf
 
 ksi_PW = (Vm_PMMA + Vm_water)/(2*R*T)*(delta_PMMA - delta_water)**2
-ksi_PM = (Vm_PMMA + Vm_meth)/(2*R*T)*(delta_PMMA - delta_meth)**2
+ksi_PM = (Vm_PMMA + Vm_meth) /(2*R*T)*(delta_PMMA - delta_meth)**2
 
 print "Solubility params: PMMA = %f | water = %f | meth = %f" % (delta_PMMA, delta_water, delta_meth)
 print "Ksi PMMA-water = %.3f" % ksi_PW
