@@ -1,16 +1,16 @@
 #!/usr/bin/env python
 """Usage:
-    gen_pmma.py <input> [--density <rho>] [--save <fname>] [--xyz <xyz>]
+    gen_pmma.py <input> (water | meth) [--density <opt>] [--save <fname>] [--xyz <xyz>]
 
 Generate LAMMPS input file to simulate PMMA with water.
 
 Parameters:
-    <input>          input yaml file
+    <input>             input yaml file
 
 Options:
-    --density <rho>  "dpd" or "real" (based on real data) [default: dpd]
-    --save <fname>   Output file name
-    --xyz <xyz>      Produce xyz file
+    --density <opt>     "dpd" or "real" (based on real data) [default: dpd]
+    --save <fname>      Output file name
+    --xyz <xyz>         Produce xyz file
 
 pv278@cam.ac.uk, 03/02/15
 """
@@ -23,22 +23,35 @@ import parse_topo as pt
 
 kB = 1.38e-23
 NA = 6.022e23
-Maw = 1.67e-27
-
-rc = 8.14e-10
-mw = 6*18
-m0 = 6*18*Maw    # 6 water molecules in a bead
-a_ii = 25
-
+MAU = 1.66e-27
 elem_wts = yaml.load(open(sys.path[0]+"/atomic_weights.yaml").read())
-rho_PMMA = 1180
+
+rc_w = 8.14e-10
+m_w = 6*18               # 6 water molecules in a bead
+m0_w = m_w*MAU    
+a_ii_w = 25
 rho_water = 1000
-rho_DPD = 3 / rc**3
+
+rc_meth = 8.45e-10
+m_meth = 3*32            # 3 methanol molecules in a bead
+m0_meth = m_meth*MAU
+a_ii_meth = a_ii_w / rc_w * rc_meth
+rho_meth = 792
+
+m_PMMA = 100
+rho_PMMA = 1180
+
+rho_DPD = 3
 
 
 def pmma_bead_mass():
     """Return mass of one PMMA monomer, defining a DPD bead"""
     return 5*elem_wts["C"] + 2*elem_wts["O"] + 8*elem_wts["H"]
+
+
+def methanol_mass():
+    """Methanol mass in AU"""
+    return 1*elem_wts["C"] + 1*elem_wts["O"] + 4*elem_wts["H"]
 
 
 def num_chains(rho, L, n):
@@ -105,7 +118,7 @@ def gen_water_beads(L, Nw, count=1):
     return xyz
 
 
-def gen_pair_coeffs(bead_types, ksi_params_yaml, gamma, rc):
+def gen_pair_coeffs(bead_types, ksi_params_yaml, gamma, rc, a_ii):
     """
     PROVISIONAL
     Generate atomic params a_ij for all possible combinations 
@@ -156,44 +169,61 @@ if __name__ == "__main__":
         print "File does not exist."
     np.random.seed(1234)
 
+    if args["water"]:
+        solvent = "water"
+        m_sol = m_w
+        rc = rc_w
+        a_ii = a_ii_w
+    elif args["meth"]:
+        solvent = "methanol"
+        m_sol = m_meth
+        rc = rc_meth
+        a_ii = a_ii_meth
+
     T = float(data["temperature"])
     L = float(data["box-size"]) * rc
     n = data["n"]
+    bead_types = "AW"
     eps = kB*T
-    tau = sqrt(m0*rc**2/eps)
+    tau = sqrt(m_sol*MAU*rc**2/eps)
+    dt = tau*0.04
     m_PMMA = pmma_bead_mass()
-    gamma = data["gamma"] * m0/tau
+    gamma = data["gamma"] * m_sol*MAU/tau
+    print "=== Creating LAMMPS input file for PMMA with", solvent, "==="
+    print "Box size:", L/rc,"| Temperature:", T,"| Tau:", tau/1e-12, "ps"
+    print "Recommend use timestep dt =", dt, "ps for dt = 0.04*tau"
     
     # ===== beads
-    pw = float(data["water-vol"])
+    pw = float(data["solvent-vol"])
     if args["--density"] == "real":
         print "Using real density, rho_PMMA = 1180, rho_water = 1000"
         Vw = pw * L**3
         Nc = int(num_chains(rho_PMMA, L, n))     # number of PMMA chains
-        Nw = int(rho_water * Vw/(6*18*Maw))
+        if args["water"]:
+            nw = int(rho_water * vw/(m_sol*mau))
+        elif args["meth"]:
+            nw = int(rho_meth * vw/(m_sol*mau))
     else:
         print "Using DPD bead density = 3"
-        Nw = int(pw * rho_DPD * L**3)
-        Nc = int((1-pw) * rho_DPD * L**3/n)
+        Nw = int(pw * rho_DPD/rc**3 * L**3)
+        Nc = int((1-pw) * rho_DPD/rc**3 * L**3/n)
     poly_xyz = grow_polymer(L, n, Nc, mu=rc, sigma=rc/10)
     water_xyz = gen_water_beads(L, Nw, count=Nc+1)
     final_xyz = np.vstack((poly_xyz, water_xyz))
     xyz_str = ll.atoms2str(final_xyz)
-    print "Bead density:", len(final_xyz)/(L/rc)**3
-    print len(final_xyz), "beads created"
+    print len(final_xyz), "beads created, density:", len(final_xyz) / (L/rc)**3
 
     # ===== bonds
     bonds = create_bonds(n, Nc)
     bonds_str = ll.bonds2str(bonds)
     print len(bonds), "bonds created"
 
-    # ===== pair and bond parameters EDIT
-    bead_types = "AW"
+    # ===== pair and bond parameters
     Nbt = len(bead_types)
-    r0 = 1.0 * rc
-    a_ij = gen_pair_coeffs(bead_types, data["ksi-params"], gamma, rc)
+    r0 = 0.85 * rc     # from Dorenbos, JCP, 2015
+    a_ij = gen_pair_coeffs(bead_types, data["ksi-params"], gamma, rc, a_ii)
     k_ij = gen_bond_coeffs(bead_types, data["bond-coeffs"], r0)
-    masses = {1: m_PMMA*Maw, 2: mw*Maw}
+    masses = {1: m_PMMA*MAU, 2: m_sol*MAU}
 
     final_string = ll.header2str(len(final_xyz), len(bonds), Nbt, len(k_ij), L) + \
                    ll.mass2str(masses) + \
@@ -205,14 +235,14 @@ if __name__ == "__main__":
     if args["--save"]:
         fname = args["--save"]
         open(fname, "w").write(final_string)
-        print "Data file written in", fname
+        print "Data file saved in", fname
     else:
         print final_string
 
     if args["--xyz"]:
         fname = args["--xyz"]
         ll.save_xyzfile(fname, final_xyz[:, 1:])
-        print "xyz file written in", fname
+        print "xyz file saved in", fname
 
 
 
