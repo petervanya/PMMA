@@ -1,13 +1,13 @@
-# Input file for the simulation of PMMA with water
+# Input file for the simulation of PMMA with solvent (water or methanol)
 
-water-vol:      0.2
-n:              100              # polymerisation
+solvent-vol:    0.2
+n:              100              # PMMA polymerisation
 temperature:    300
 box-size:       40               # in DPD units
 gamma:          4.5              # as in Groot_JCP_1997
 
 ksi-params:
-    1 2:        13.0             # PROVISIONAL
+    1 2:        17.1             # PMMA-water
 
 bond-coeffs:
     1 2:        4.0
