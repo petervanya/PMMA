@@ -5,20 +5,22 @@ A collection of functions to manipulate LAMMPS files
 pv278@cam.ac.uk, 11/01/16
 """
 import numpy as np
+from cStringIO import StringIO
 
 # ===== print input
 def header2str(N, Nbonds, atomtypes, bondtypes, L):
     """Generate LAMMPS header"""
-    s = "#blabla\n"
-    s += str(N) + " atoms\n"
-    s += str(Nbonds) + " bonds\n"
-    s += str(atomtypes) + " atom types\n"
-    s += str(bondtypes) + " bond types\n"
-    s += "\n"
-    s += "0.0 " + str(L) + " xlo xhi\n"
-    s += "0.0 " + str(L) + " ylo yhi\n"
-    s += "0.0 " + str(L) + " zlo zhi\n\n"
-    return s
+    f = StringIO()
+    f.write("#blabla\n")
+    f.write("{} atoms\n".format(N))
+    f.write("{} bonds\n".format(Nbonds))
+    f.write("{} atom types\n".format(atomtypes))
+    f.write("{} bond types\n".format(bondtypes))
+    f.write("\n")
+    f.write("0.0 {} xlo xhi\n".format(L))
+    f.write("0.0 {} ylo yhi\n".format(L))
+    f.write("0.0 {} zlo zhi\n\n".format(L))
+    return f.getvalue()
 
 
 def mass2str(masses):
