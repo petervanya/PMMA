@@ -25,8 +25,9 @@ Vm_meth = m_meth/rho_meth * 1e6
 # in MPa**0.5
 delta_PMMA = 19
 delta_water = 47.8
-delta_meth = sqrt(9.87**2 + 6.37**2 + 5.86**2) 
+# delta_meth = sqrt(9.87**2 + 6.37**2 + 5.86**2) 
 # from http://www.wag.caltech.edu/publications/sup/pdf/587.pdf
+delta_meth = 29.7
 
 ksi_PW = (Vm_PMMA + Vm_water)/(2*R*T)*(delta_PMMA - delta_water)**2
 ksi_PM = (Vm_PMMA + Vm_meth) /(2*R*T)*(delta_PMMA - delta_meth)**2
