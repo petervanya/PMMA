@@ -17,14 +17,14 @@ pv278@cam.ac.uk, 03/02/15
 import numpy as np
 from math import *
 from docopt import docopt
-import sys, yaml
+import yaml
 import lmp_lib as ll
 import parse_topo as pt
 
 kB = 1.38e-23
 NA = 6.022e23
 MAU = 1.66e-27
-elem_wts = yaml.load(open(sys.path[0]+"/atomic_weights.yaml").read())
+elem_wts = yaml.load(open('atomic_weights.yaml').read())
 
 rc_w = 8.14e-10
 m_w = 6*18               # 6 water molecules in a bead
