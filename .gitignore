@@ -1,3 +1,5 @@
 Test/
 L40*/
 *.pyc
+_caf
+build

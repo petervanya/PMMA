@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+"""caf -- Calculation framework.
+
+Usage:
+    caf init
+    caf [init] build [-n]
+    caf [[init] build] work [TARGET...] [-d N] [-l N] [-p PROFILE [-j N] | [--id ID] [-n]]
+    caf status
+    caf list (--profiles | --remotes | --finished | --workers)
+    caf search [--contains PATTERN] [--older TIME]
+    caf cmd CMD
+    caf remote add URL [NAME]
+    caf update REMOTE
+    caf check REMOTE [TARGET...]
+    caf push REMOTE [TARGET...] [-n]
+    caf fetch REMOTE [TARGET...] [-n]
+    caf go REMOTE
+    caf REMOTE [--] CMD...
+
+Options:
+    -n, --dry                  Dry run.
+    --id ID                    ID of worker [default: 1].
+    -p, --profile PROFILE      Run worker via ~/.config/caf/worker_PROFILE.
+    -j N                       Number of launched workers [default: 1].
+    -d, --depth N              Limit depth of descending to children.
+    -l, --limit N              Limit number of tasks to N.
+    --profiles                 List profiles.
+    --remotes                  List reomtes.
+    --finished                 List finished tasks.
+    --contains PATTERN         Search tasks containing PATTERN.
+    --older TIME               Search tasks older than.
+
+Commands:
+    init
+        Initialize the caf repository in ./_caf. If 'cache' is defined in
+        ~/.config/caf/conf.yaml, the repository is created there and symlinked
+        to ./_caf, otherwise it is created locally.
+
+    build
+        Prepare build tasks and targets defined in ./cscript. Tasks are created
+        in ./_caf/Brewery/Latest and if their preparation does not depened on
+        unfinished tasks, they are prepared and stored in ./_caf/Cellar based
+        on their SHA1 hash. Targets (collections of symlinks to tasks) are
+        created in ./build/Latest.
+
+    work
+        Execute all prepared build tasks.
+
+    status
+        Print number of initialized, running and finished tasks.
+
+    remote
+        add
+            Define a new remote and save it in ./.caf/remotes.yaml.
+
+    update
+        Sync the contents of . to remote excluding ./_caf and ./build.
+
+    push
+        Push targets to remote and store them in remote Cellar.
+
+    fetch
+        Fetch targets from remote and store them in local Cellar.
+
+    go
+        SSH into the remote caf repository.
+
+    REMOTE
+        Run './caf CMD' in remote caf repository.
+
+"""
+from docopt import docopt
+from pathlib import Path
+import os
+import sys
+import subprocess
+
+from caflib.Utils import Configuration, mkdir, get_timestamp, build_cmd
+from caflib.Logging import error, info
+
+out = Path('build')
+cache = Path('_caf')
+cellar = 'Cellar'
+brewery = 'Brewery'
+latest = 'Latest'
+
+
+def load_cscript():
+    import imp
+    cscript = imp.new_module('cscript')
+    try:
+        exec(compile(open('cscript').read(), 'cscript', 'exec'), cscript.__dict__)
+    except:
+        import traceback
+        traceback.print_exc()
+        error('There was an error while reading cscript.')
+    return cscript
+
+
+def make_new_build():
+    timestamp = get_timestamp()
+    mkdir(cache/brewery/timestamp)
+    os.system('ln -fns {} {}'.format(timestamp, cache/brewery/latest))
+    mkdir(out/timestamp, parents=True)
+    os.system('ln -fns {} {}'.format(timestamp, out/latest))
+
+
+def report(path, *paths, print_running=False):
+    print('{}: number of running/finished/prepared/all tasks: {}/{}/{}/{}'
+          .format(path,
+                  len([p for p in paths if (p/'.lock').is_dir()]),
+                  len([p for p in paths if (p/'.caf/seal').is_file()]),
+                  len([p for p in paths if (p/'.caf/lock').is_file()]),
+                  len([p for p in paths if (p/'.caf').is_dir()])))
+    if print_running:
+        for p in paths:
+            if (p/'.lock').is_dir():
+                print('>> {}'.format(p))
+
+
+if __name__ == '__main__':
+    remote_conf = Configuration('.caf/remotes.yaml')
+    if len(sys.argv) > 1:
+        if (any(r in remote_conf for r in sys.argv[1].split(',')) or
+            sys.argv[1] == 'all') \
+                and sys.argv[2] != '--':
+            sys.argv.insert(2, '--')  # fix cmd arguments for ./caf REMOTE
+    args = docopt(__doc__)
+    if args['REMOTE'] and args['CMD']:
+        remote_args = docopt(__doc__, argv=args['CMD'])
+        if remote_args['REMOTE']:
+            docopt(__doc__, argv=['./caf'])
+    if args['REMOTE']:
+        from caflib.Remote import Remote
+        if args['REMOTE'] == 'all':
+            remotes = remote_conf.keys()
+        else:
+            remotes = args['REMOTE'].split(',')
+        try:
+            remotes = [Remote(**remote_conf[r]) for r in remotes]
+        except KeyError as e:
+            error('Remote {!r} is not defined'.format(e.args[0]))
+    else:
+        remotes = []
+    if args['init']:
+        conf = Configuration(os.environ['HOME'] + '/.config/caf/conf.yaml')
+        if conf['cache']:
+            timestamp = get_timestamp()
+            cache_path = Path(conf['cache'])/'{}_{}'.format(Path().resolve().name, timestamp)
+            mkdir(cache_path)
+            os.system('ln -fns {} {}'.format(cache_path, cache))
+        else:
+            info('Global cache not found in ~/.config/caf/conf.yaml, using a local one.')
+            mkdir(cache)
+        mkdir(cache/cellar)
+        mkdir(cache/brewery)
+    if args['build']:
+        from caflib.Context import Context
+        cscript = load_cscript()
+        ctx = Context(cache/cellar)
+        cscript.build(ctx)
+        if not args['--dry']:
+            make_new_build()
+            ctx.build(cache/brewery/latest)
+            ctx.make_targets(out/latest)
+    if args['work']:
+        if args['--profile']:
+            for _ in range(int(args['-j'])):
+                cmd = build_cmd('~/.config/caf/worker_' + args['--profile'],
+                                ' '.join(args['TARGET']),
+                                ('-d', args['--depth']),
+                                ('-l', args['--limit']))
+                try:
+                    subprocess.check_call(cmd, shell=True)
+                except subprocess.CalledProcessError:
+                    error('Running ~/.config/caf/worker_{} did not succeed.'
+                          .format(args['--profile']))
+        else:
+            from caflib.Worker import Worker
+            worker = Worker(args['--id'], (out/latest).resolve())
+            worker.work(args['TARGET'],
+                        dry=args['--dry'],
+                        maxdepth=int(args['--depth']) if args['--depth'] else None,
+                        limit=int(args['--limit']) if args['--limit'] else None)
+    elif args['list']:
+        if args['--profiles']:
+            for p in Path(os.environ['HOME']).glob('.config/caf/worker_*'):
+                print(p.name)
+        elif args['--remotes']:
+            print(remote_conf)
+        elif args['--finished']:
+            subprocess.call('find -H build/Latest -exec test -f "{}/.caf/seal" \; -print',
+                            shell=True)
+    elif args['search']:
+        cmd = 'find {} -maxdepth 3 -mindepth 3 -type d'.format(cache/cellar)
+        if args['--older']:
+            lim = args['--older']
+            if lim[0] not in ['-', '+']:
+                lim = '+' + lim
+            cmd += ' -ctime {}'.format(lim)
+        if args['--contains']:
+            cmd += ' -exec test -f "{{}}/{}" \;'.format(args['--contains'])
+        cmd += ' -print'
+        os.system(cmd)
+    elif args['status']:
+        import glob
+        report(cache/brewery/latest, *(cache/brewery/latest).glob('*'))
+        for target in glob.glob(str(out/latest) + '/*'):
+            target = Path(target)
+            if not target.is_dir():
+                continue
+            if target.is_symlink():
+                report(target, target, print_running=True)
+            else:
+                report(target, *target.glob('*'), print_running=True)
+    elif args['cmd']:
+        subprocess.call(['bash', '-c', '. ~/.bashrc; ' + args['CMD'][0]])
+    elif args['remote']:
+        if args['add']:
+            conf = Configuration('.caf/remotes.yaml')
+            host, path = args['URL'].split(':')
+            name = args['NAME'] or host
+            conf[name] = {'host': host, 'path': path}
+            conf.save()
+    elif args['update']:
+        for remote in remotes:
+            remote.update()
+    elif args['check']:
+        for remote in remotes:
+            remote.check(args['TARGET'], cache/cellar, out/latest)
+    elif args['push']:
+        for remote in remotes:
+            remote.push(args['TARGET'], cache/cellar, out/latest, args['--dry'])
+    elif args['fetch']:
+        for remote in remotes:
+            remote.fetch(args['TARGET'], cache/cellar, out/latest, args['--dry'])
+    elif args['go']:
+        remotes[0].go()
+    elif remotes:
+        if args['CMD'][0] in ['init', 'build', 'work']:
+            for remote in remotes:
+                remote.update()
+        if 'work' in args['CMD'] and 'build' not in args['CMD']:
+            for remote in remotes:
+                remote.check(args['TARGET'], cache/cellar, out/latest)
+        for remote in remotes:
+            if args['CMD'][0] == 'cmd':
+                args['CMD'][1] = repr(args['CMD'][1])
+            remote.command(' '.join(args['CMD']))
