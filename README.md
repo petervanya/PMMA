@@ -6,8 +6,8 @@ with interaction parameters calculated from the Flory-Huggins theory.
 
 The `gen_pmma.py` script generates a LAMMPS data file with initial setting (atomic coordinates
 and bonds). This is then read with LAMMPS input file `pmma.in` typing 
-```bash
-$ mpirun -n 8 lmp_mpi < pmma.in
+```
+mpirun -n 8 lmp_mpi < pmma.in
 ``` 
 (using 8 cores), where `lmp_mpi` is the LAMMPS executable (on the PATH).
 
@@ -25,6 +25,6 @@ To start, run `gen_pmma.py -h`.
 * methanol: 13.1
 * PMMA: 19
 
-Calculate the Flory-Huggins ksi parameters using
-`ksi(i,j) = <Vm>/(RT) (delta(i) - delta(j))**2`
-where `<Vm>` is average molar volume of the two constituents (e.g. PMMA and water)
+Calculate the Flory-Huggins `chi` parameters using
+`chi(i,j) = <Vm>/(RT) (delta(i) - delta(j))**2`
+where `<Vm>` is average molar volume of the two constituents (e.g. PMMA and water).
