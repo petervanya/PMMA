@@ -3,9 +3,7 @@
 
 def build(ctx):
     ctx(command='python gen_pmma.py input.yaml water --save pmma.data',
-        files=['*.yaml', '*.py']) +\
-        ctx.target('input') +\
-        ctx.link('inp', 'pmma.data') +\
-        ctx(command='run_lammps -in pmma.in',
-            files='pmma.in') +\
-        ctx.target('main')
+        files='*.yaml *.py') * ctx.target('input') \
+        + ctx.link(None, 'pmma.data') \
+        + ctx(command='run_lammps -in pmma.in',
+              files='pmma.in') * ctx.target('main')
