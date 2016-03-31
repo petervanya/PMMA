@@ -1,0 +1,308 @@
+#!/usr/bin/env python3
+"""caf -- Calculation framework.
+
+Usage:
+    caf init
+    caf [init] build [-n]
+    caf [[init] build] work [TARGET...] [-d N] [-l N] [-p PROFILE [-j N] | [--id ID] [-n]]
+    caf status
+    caf list (--profiles | --remotes | --finished | --workers)
+    caf search [--contains PATTERN] [--older TIME]
+    caf cmd CMD
+    caf remote add URL [NAME]
+    caf update REMOTE
+    caf check REMOTE [TARGET...]
+    caf push REMOTE [TARGET...] [-n]
+    caf fetch REMOTE [TARGET...] [-n]
+    caf go REMOTE
+    caf REMOTE [--] CMD...
+    caf (pack | unpack | strip)
+
+Options:
+    -n, --dry                  Dry run.
+    --id ID                    ID of worker [default: 1].
+    -p, --profile PROFILE      Run worker via ~/.config/caf/worker_PROFILE.
+    -j N                       Number of launched workers [default: 1].
+    -d, --depth N              Limit depth of descending to children.
+    -l, --limit N              Limit number of tasks to N.
+    --profiles                 List profiles.
+    --remotes                  List reomtes.
+    --finished                 List finished tasks.
+    --contains PATTERN         Search tasks containing PATTERN.
+    --older TIME               Search tasks older than.
+
+Commands:
+    init
+        Initialize the caf repository in ./_caf. If 'cache' is defined in
+        ~/.config/caf/conf.yaml, the repository is created there and symlinked
+        to ./_caf, otherwise it is created locally.
+
+    build
+        Prepare build tasks and targets defined in ./cscript. Tasks are created
+        in ./_caf/Brewery/Latest and if their preparation does not depened on
+        unfinished tasks, they are prepared and stored in ./_caf/Cellar based
+        on their SHA1 hash. Targets (collections of symlinks to tasks) are
+        created in ./build/Latest.
+
+    work
+        Execute all prepared build tasks.
+
+    status
+        Print number of initialized, running and finished tasks.
+
+    remote
+        add
+            Define a new remote and save it in ./.caf/remotes.yaml.
+
+    update
+        Sync the contents of . to remote excluding ./_caf and ./build.
+
+    push
+        Push targets to remote and store them in remote Cellar.
+
+    fetch
+        Fetch targets from remote and store them in local Cellar.
+
+    go
+        SSH into the remote caf repository.
+
+    REMOTE
+        Run './caf CMD' in remote caf repository.
+
+"""
+from docopt import docopt
+from pathlib import Path
+import os
+import sys
+import subprocess
+
+out = Path('build')
+cache = Path('_caf')
+cellar = 'Cellar'
+brewery = 'Brewery'
+latest = 'Latest'
+
+
+def load_cscript():
+    from caflib.Logging import error
+    import imp
+    cscript = imp.new_module('cscript')
+    try:
+        exec(compile(open('cscript').read(), 'cscript', 'exec'), cscript.__dict__)
+    except:
+        import traceback
+        traceback.print_exc()
+        error('There was an error while reading cscript.')
+    return cscript
+
+
+def make_new_build():
+    from caflib.Utils import mkdir, get_timestamp
+    timestamp = get_timestamp()
+    mkdir(cache/brewery/timestamp)
+    os.system('ln -fns {} {}'.format(timestamp, cache/brewery/latest))
+    mkdir(out/timestamp, parents=True)
+    os.system('ln -fns {} {}'.format(timestamp, out/latest))
+
+
+def report(path, *paths, print_running=False):
+    print('{}: number of running/finished/prepared/all tasks: {}/{}/{}/{}'
+          .format(path,
+                  len([p for p in paths if (p/'.lock').is_dir()]),
+                  len([p for p in paths if (p/'.caf/seal').is_file()]),
+                  len([p for p in paths if (p/'.caf/lock').is_file()]),
+                  len([p for p in paths if (p/'.caf').is_dir()])))
+    if print_running:
+        for p in paths:
+            if (p/'.lock').is_dir():
+                print('>> {}'.format(p))
+
+
+def pack():
+    from base64 import b64encode
+    archive = subprocess.check_output(
+        'find caflib -type f ! -name "*.pyc" | xargs tar -cz', shell=True)
+    with open('caf', 'a') as f:
+        f.write('\n')
+        f.write('# ==>\n')
+        f.write('# {}\n'.format(b64encode(archive).decode()))
+        f.write('# <==\n')
+
+
+def unpack():
+    from base64 import b64decode
+    from hashlib import md5
+    with open('caf') as f:
+        archive = b64decode(f.readlines()[-2][2:])
+        dirname = '.caflib-{}'.format(md5(archive).hexdigest())
+        p = subprocess.Popen('mkdir -p {0} && tar -C {0} -x'.format(dirname),
+                             shell=True,
+                             stdin=subprocess.PIPE)
+        p.communicate(input=archive)
+    return dirname
+
+
+if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        if sys.argv[1] == 'pack':
+            pack()
+            sys.exit()
+        if sys.argv[1] == 'unpack':
+            dirname = unpack()
+            (Path(dirname)/'caflib').rename('caflib')
+            Path(dirname).rmdir()
+            sys.exit()
+        if sys.argv[1] == 'strip':
+            with open('caf') as f:
+                lines = f.readlines()
+            if '# ==>' in lines[-3]:
+                with open('caf', 'w') as f:
+                    for line in lines[:-4]:
+                        f.write(line)
+            else:
+                print('Nothing to strip')
+    if not Path('caflib').is_dir():
+        caflibs = list(Path().glob('.caflib-*'))
+        if not caflibs:
+            caflibname = unpack()
+        else:
+            caflibname = str(caflibs[0])
+            if len(caflibs) > 1:
+                print('Multiple caflibs, will load {}'.format(caflibname))
+        sys.path.insert(0, caflibname)
+
+    from caflib.Utils import Configuration, mkdir, get_timestamp, build_cmd
+    from caflib.Logging import error, info
+
+    remote_conf = Configuration('.caf/remotes.yaml')
+    if len(sys.argv) > 1:
+        if (any(r in remote_conf for r in sys.argv[1].split(',')) or
+            sys.argv[1] == 'all') \
+                and sys.argv[2] != '--':
+            sys.argv.insert(2, '--')  # fix cmd arguments for ./caf REMOTE
+    args = docopt(__doc__)
+    if args['REMOTE'] and args['CMD']:
+        remote_args = docopt(__doc__, argv=args['CMD'])
+        if remote_args['REMOTE']:
+            docopt(__doc__, argv=['./caf'])
+    if args['REMOTE']:
+        from caflib.Remote import Remote
+        if args['REMOTE'] == 'all':
+            remotes = remote_conf.keys()
+        else:
+            remotes = args['REMOTE'].split(',')
+        try:
+            remotes = [Remote(**remote_conf[r]) for r in remotes]
+        except KeyError as e:
+            error('Remote {!r} is not defined'.format(e.args[0]))
+    else:
+        remotes = []
+    if args['init']:
+        conf = Configuration(os.environ['HOME'] + '/.config/caf/conf.yaml')
+        if conf['cache']:
+            timestamp = get_timestamp()
+            cache_path = Path(conf['cache'])/'{}_{}'.format(Path().resolve().name, timestamp)
+            mkdir(cache_path)
+            os.system('ln -fns {} {}'.format(cache_path, cache))
+        else:
+            info('Global cache not found in ~/.config/caf/conf.yaml, using a local one.')
+            mkdir(cache)
+        mkdir(cache/cellar)
+        mkdir(cache/brewery)
+    if args['build']:
+        from caflib.Context import Context
+        cscript = load_cscript()
+        ctx = Context(cache/cellar)
+        cscript.build(ctx)
+        if not args['--dry']:
+            make_new_build()
+            ctx.build(cache/brewery/latest)
+            ctx.make_targets(out/latest)
+    if args['work']:
+        if args['--profile']:
+            for _ in range(int(args['-j'])):
+                cmd = build_cmd('~/.config/caf/worker_' + args['--profile'],
+                                ' '.join(args['TARGET']),
+                                ('-d', args['--depth']),
+                                ('-l', args['--limit']))
+                try:
+                    subprocess.check_call(cmd, shell=True)
+                except subprocess.CalledProcessError:
+                    error('Running ~/.config/caf/worker_{} did not succeed.'
+                          .format(args['--profile']))
+        else:
+            from caflib.Worker import Worker
+            worker = Worker(args['--id'], (out/latest).resolve())
+            worker.work(args['TARGET'],
+                        dry=args['--dry'],
+                        maxdepth=int(args['--depth']) if args['--depth'] else None,
+                        limit=int(args['--limit']) if args['--limit'] else None)
+    elif args['list']:
+        if args['--profiles']:
+            for p in Path(os.environ['HOME']).glob('.config/caf/worker_*'):
+                print(p.name)
+        elif args['--remotes']:
+            print(remote_conf)
+        elif args['--finished']:
+            subprocess.call('find -H build/Latest -exec test -f "{}/.caf/seal" \; -print',
+                            shell=True)
+    elif args['search']:
+        cmd = 'find {} -maxdepth 3 -mindepth 3 -type d'.format(cache/cellar)
+        if args['--older']:
+            lim = args['--older']
+            if lim[0] not in ['-', '+']:
+                lim = '+' + lim
+            cmd += ' -ctime {}'.format(lim)
+        if args['--contains']:
+            cmd += ' -exec test -f "{{}}/{}" \;'.format(args['--contains'])
+        cmd += ' -print'
+        os.system(cmd)
+    elif args['status']:
+        import glob
+        report(cache/brewery/latest, *(cache/brewery/latest).glob('*'))
+        for target in glob.glob(str(out/latest) + '/*'):
+            target = Path(target)
+            if not target.is_dir():
+                continue
+            if target.is_symlink():
+                report(target, target, print_running=True)
+            else:
+                report(target, *target.glob('*'), print_running=True)
+    elif args['cmd']:
+        subprocess.call(['bash', '-c', '. ~/.bashrc; ' + args['CMD'][0]])
+    elif args['remote']:
+        if args['add']:
+            conf = Configuration('.caf/remotes.yaml')
+            host, path = args['URL'].split(':')
+            name = args['NAME'] or host
+            conf[name] = {'host': host, 'path': path}
+            conf.save()
+    elif args['update']:
+        for remote in remotes:
+            remote.update()
+    elif args['check']:
+        for remote in remotes:
+            remote.check(args['TARGET'], cache/cellar, out/latest)
+    elif args['push']:
+        for remote in remotes:
+            remote.push(args['TARGET'], cache/cellar, out/latest, args['--dry'])
+    elif args['fetch']:
+        for remote in remotes:
+            remote.fetch(args['TARGET'], cache/cellar, out/latest, args['--dry'])
+    elif args['go']:
+        remotes[0].go()
+    elif remotes:
+        if args['CMD'][0] in ['init', 'build', 'work']:
+            for remote in remotes:
+                remote.update()
+        if 'work' in args['CMD'] and 'build' not in args['CMD']:
+            for remote in remotes:
+                remote.check(args['TARGET'], cache/cellar, out/latest)
+        for remote in remotes:
+            if args['CMD'][0] == 'cmd':
+                args['CMD'][1] = repr(args['CMD'][1])
+            remote.command(' '.join(args['CMD']))
+
+# ==>
+# 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Po/P4/P4PD6Pz+Pz+Dw+j8/j8/g8Po/P4/P4/H/2/D+7dN3QABgBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+# <==
