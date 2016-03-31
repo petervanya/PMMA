@@ -1,7 +1,7 @@
 # PMMA
 
 Simulation of PMMA (poly-methyl methacrylate) in water or methanol 
-using dissipative particle dynamics in [http://lammps.sandia.gov](LAMMPS),
+using dissipative particle dynamics in [LAMMPS](http://lammps.sandia.gov),
 with interaction parameters calculated from the Flory-Huggins theory.
 
 The `gen_pmma.py` script generates a LAMMPS data file with initial setting (atomic coordinates
@@ -20,7 +20,7 @@ To start, run `gen_pmma.py -h`.
 
 
 ## Physics
-[https://en.wikipedia.org/wiki/Hildebrand_solubility_parameter](Hildebrand solubility parameters) $delta$:
+[Hildebrand solubility parameters](https://en.wikipedia.org/wiki/Hildebrand_solubility_parameter) `delta`:
 * water: 47.8
 * methanol: 13.1
 * PMMA: 19
